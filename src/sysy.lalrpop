@@ -1,0 +1,158 @@
+use crate::ast::*;
+
+// lalrpop 里的约定
+grammar;
+
+// 约束 lexer 的行为
+match {
+  // 跳过空白符和注释
+  r"\s*" => {},
+  r"//[^\n\r]*[\n\r]*" => {},
+  r"(/\*)([\S\s]*)(\*/)" => {},
+  // 剩下的情况采用默认方式处理
+  _
+}
+
+// 定义 CompUnit, 其返回值类型为 String
+// parser 在解析完成后的行为是返回 FuncDef 的值
+pub CompUnit: CompUnit = <func_def: FuncDef> => CompUnit { <> };
+
+Decl: Decl = {
+  <constdecl: ConstDecl> => Decl::CDecl(<>),
+  <vardecl: VarDecl> => Decl::VDecl(<>),
+}
+
+ConstDecl: ConstDecl = {
+  "const" <btype: BType> <constdef: ConstDef> <mut constdefs: ("," <ConstDef>)*> ";" => {
+    constdefs.insert(0, constdef);
+    ConstDecl { constdefs }
+  },
+}
+
+BType: BType = "int" => BType::Int;
+
+ConstDef: ConstDef = <ident: Ident> "=" <constinitval: ConstInitVal> => ConstDef { <> };
+
+ConstInitVal: ConstInitVal = <constexp: ConstExp> => ConstInitVal { <> };
+
+VarDecl: VarDecl = {
+  <btype: BType> <vardef: VarDef> <mut vardefs: ("," <VarDef>)*> ";" => {
+    vardefs.insert(0, vardef);
+    VarDecl { vardefs }
+  },
+}
+
+VarDef: VarDef = <ident: Ident> <initval: ("=" <InitVal>)?> => VarDef { <> };
+
+InitVal: InitVal = <exp: Exp> => InitVal { <> };
+
+FuncDef: FuncDef = {
+  <func_type: FuncType> <ident: Ident> "(" ")" <block: Block> => {
+    FuncDef { <> }
+  }
+}
+
+FuncType: FuncType = "int" => FuncType::Int;
+
+Block: Block = "{" <items: (<BlockItem>)*> "}" => Block { <> };
+
+BlockItem: BlockItem = {
+  <decl: Decl> => BlockItem::Decl(<>),
+  <stmt: Stmt> => BlockItem::Stmt(<>),
+}
+
+Stmt: Stmt = {
+  <lval: LVal> "=" <exp: Exp> ";" => Stmt::Assign(lval, exp),
+  "return" <exp: Exp> ";" => Stmt::Return(<>),
+}
+
+Exp: Exp = <lorexp: LOrExp> => Exp { lorexp:Box::new(lorexp) };
+
+LVal: LVal = <ident: Ident> => LVal { <> };
+
+PrimaryExp: PrimaryExp = {
+  "(" <exp: Exp> ")" => PrimaryExp::Exp(<>),
+  <num: Number> => PrimaryExp::Number(<>),
+  <lval: LVal> => PrimaryExp::LVal(<>),
+}
+
+Number: i32 = <num: IntConst> => <>;
+
+UnaryExp: UnaryExp = {
+  <primaryexp: PrimaryExp> => UnaryExp::PExp(<>),
+  <unaryop: UnaryOp> <unaryexp: UnaryExp> => UnaryExp::UExp(unaryop,Box::new(unaryexp)),
+}
+
+UnaryOp: UnaryOp = {
+  "+" => UnaryOp::Pos,
+  "-" => UnaryOp::Neg,
+  "!" => UnaryOp::Not,
+  "~" => UnaryOp::Inv,
+}
+
+MulExp: MulExp = {
+  <unaryexp: UnaryExp> => MulExp::UExp(<>),
+  <mulexp: MulExp> <mulop: MulOp> <unaryexp: UnaryExp> => MulExp::MExp(Box::new(mulexp),mulop,unaryexp),
+}
+
+MulOp: MulOp = {
+  "*" => MulOp::Mul,
+  "/" => MulOp::Div,
+  "%" => MulOp::Mod,
+}
+
+AddExp: AddExp = {
+  <mulexp: MulExp> => AddExp::MExp(<>),
+  <addexp: AddExp> <addop: AddOp> <mulexp: MulExp> => AddExp::AExp(Box::new(addexp),addop,mulexp),
+}
+
+AddOp: AddOp = {
+  "+" => AddOp::Add,
+  "-" => AddOp::Sub,
+}
+
+RelExp: RelExp = {
+  <addexp: AddExp> => RelExp::AExp(<>),
+  <relexp: RelExp> <relop: RelOp> <addexp: AddExp> => RelExp::RExp(Box::new(relexp),relop,addexp),
+}
+
+RelOp: RelOp = {
+  "<" => RelOp::Lt,
+  ">" => RelOp::Gt,
+  "<=" => RelOp::Le,
+  ">=" => RelOp::Ge,
+}
+
+EqExp: EqExp = {
+  <relexp: RelExp> => EqExp::RExp(<>),
+  <eqexp: EqExp> <eqop: EqOp> <relexp: RelExp> => EqExp::EExp(Box::new(eqexp),eqop,relexp),
+}
+
+EqOp: EqOp = {
+  "==" => EqOp::Equ,
+  "!=" => EqOp::Ne,
+}
+
+LAndExp: LAndExp = {
+  <eqexp: EqExp> => LAndExp::EExp(<>),
+  <landexp: LAndExp> "&&" <eqexp: EqExp> => LAndExp::LAExp(Box::new(landexp),eqexp),
+}
+
+LOrExp: LOrExp = {
+  <landexp: LAndExp> => LOrExp::LAExp(<>),
+  <lorexp: LOrExp> "||" <landexp: LAndExp> => LOrExp::LOExp(Box::new(lorexp),landexp),
+}
+
+ConstExp: ConstExp = <exp: Exp> => ConstExp { <> };
+
+// 如果匹配到标识符, 就返回这个字符串
+// 一对尖括号在此处指代的是正则表达式匹配到的字符串 (&str)
+// 关于尖括号到底代表什么, 请 RTFM
+Ident: String = r"[_a-zA-Z][_a-zA-Z0-9]*" => <>.to_string();
+
+// 对整数字面量的处理方式: 把匹配到的字符串按对应进制转换成数字
+IntConst: i32 = {
+  r"[1-9][0-9]*" => i32::from_str_radix(<>, 10).unwrap(),
+  r"0[0-7]*" => i32::from_str_radix(<>, 8).unwrap(),
+  r"0[xX][0-9a-fA-F]+" => i32::from_str_radix(&<>[2..], 16).unwrap(),
+}
